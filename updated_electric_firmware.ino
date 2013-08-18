@@ -1,9 +1,10 @@
 /* 
   ArbotiX Firmware for ROS driver
-  Copyright (c) 2008-2011 Vanadium Labs LLC.  All right reserved.
+  Copyright (c) 2008-2013 Vanadium Labs LLC.  All right reserved.
  
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
+
       * Redistributions of source code must retain the above copyright
         notice, this list of conditions and the following disclaimer.
       * Redistributions in binary form must reproduce the above copyright
@@ -27,7 +28,6 @@
 
 /* Build Configuration */
 #define USE_BASE            // Enable support for a mobile base
-#define USE_BIG_MOTORS      // Enable Pololu 30A support
 #define USE_HW_SERVOS       // Enable only 2/8 servos, but using hardware control
 
 #define CONTROLLER_COUNT    5
@@ -49,13 +49,8 @@ BioloidController controllers[CONTROLLER_COUNT];
 #endif
 
 #ifdef USE_BASE
-  #ifdef USE_BIG_MOTORS
-    #include <BigMotors.h>
-    BigMotors drive = BigMotors();
-  #else
-    #include <Motors2.h>
-    Motors2 drive = Motors2();
-  #endif
+  #include <Motors2.h>
+  Motors2 drive = Motors2();
   #include <EncodersAB.h>
   #include "diff_controller.h"
 #endif
@@ -77,8 +72,8 @@ int seqPos;                     // step in current sequence
 /* 
  * Setup Functions
  */
-#if defined(AX_RX_SWITCHED)
 void scan(){
+#if defined(AX_RX_SWITCHED)
   // do a search for devices on the RX bus, default to AX if not found
   int i;
   for(i=0;i<AX12_MAX_SERVOS;i++){
@@ -86,19 +81,20 @@ void scan(){
     if(ax12GetRegister(i+1, AX_ID, 1) != (i+1)){
       dynamixel_bus_config[i] = 0;
     }
-  }  
-}
+  }
 #endif
+}
+
 void setup(){
   Serial.begin(115200);
   ax12Init(1000000);
 
-#ifdef USE_BASE  
+#ifdef USE_BASE
+  drive.init();
   Encoders.Begin();
   setupPID();
 #endif
 
-// note: ARBOTIX_PLUS and SERVO_STIK are defined in our Bioloid library.
 #if defined(AX_RX_SWITCHED)
   delay(1000);
   scan();
@@ -114,17 +110,15 @@ unsigned char handleWrite(){
   int addr  = params[0];  // address to write
   int bytes = length-3;   // # of bytes left to write
   int k = 1;              // index in parameters of value to write
+
   while(bytes > 0){
     if(addr < REG_BAUD_RATE){
-      return INSTRUCTION_ERROR;
+      return ERR_INSTRUCTION;
     }else if(addr == REG_BAUD_RATE){
-      UBRR1L = params[k];      
+      UBRR1L = params[k];
     }else if(addr < REG_RESCAN){
-      // write digital 
+      // write digital
       int pin = addr - REG_DIGITAL;
-    #ifdef SERVO_STIK
-      pin = 31-pin;
-    #endif
       if(params[k] & 0x02)    // high
         digitalWrite(pin, HIGH);
       else
@@ -134,15 +128,13 @@ unsigned char handleWrite(){
       else
         pinMode(pin, INPUT);
     }else if(addr == REG_RESCAN){
-#if defined(AX_RX_SWITCHED)
       scan();
-#endif
     }else if(addr == REG_RETURN_LEVEL){
       ret_level = params[k];
     }else if(addr == REG_ALARM_LED){
       // TODO: 
     }else if(addr < REG_SERVO_BASE){
-      return INSTRUCTION_ERROR; // error - analog are read only
+      return ERR_INSTRUCTION; // error - analog are read only
     }else if(addr < REG_MOVING){
       // write servo
       int s = addr - REG_SERVO_BASE;
@@ -151,7 +143,7 @@ unsigned char handleWrite(){
  #else
       if( s >= 20){
  #endif 
-        return INSTRUCTION_ERROR;
+        return ERR_INSTRUCTION;
       }else{
         if( s%2 == 0 ){ // low byte
           s = s/2;
@@ -169,17 +161,22 @@ unsigned char handleWrite(){
         }
       }
     }else{
-      return INSTRUCTION_ERROR;
+      return ERR_INSTRUCTION;
     }
     addr++;k++;bytes--;
   }
-  return 0;
+  return ERR_NONE;
 }
 
+
+/*
+ * Handle a read from ArbotiX registers.
+ */
 int handleRead(){
   int checksum = 0;
   int addr = params[0];
   int bytes = params[1];
+
   unsigned char v;
   while(bytes > 0){
     if(addr == REG_MODEL_NUMBER_L){ 
@@ -196,18 +193,10 @@ int handleRead(){
       // send digital read
       if(addr == REG_DIGITAL){
         // 0->7
-    #ifdef SERVO_STIK
-        v = PINA;
-    #else
         v = PINB;
-    #endif
       }else if(addr == REG_DIGITAL+1){
         // 8-15
-    #ifdef SERVO_STIK
-        v = (PINB>>1);
-    #else
         v = PIND;
-    #endif        
       }else{
         // 16-23
         v = PIND;
@@ -218,17 +207,22 @@ int handleRead(){
       // TODO
     }else if(addr < REG_SERVO_BASE){
       // send analog reading
-      v = analogRead(addr-REG_ANA_BASE)>>2;
+      int x = analogRead(addr-REG_ANA_BASE)>>2;
+      x += analogRead(addr-REG_ANA_BASE)>>2;
+      x += analogRead(addr-REG_ANA_BASE)>>2;
+      x += analogRead(addr-REG_ANA_BASE)>>2;
+      v = x/4;
     }else if(addr < REG_MOVING){
       // send servo position
       v = 0;      
     }else{
-      v = 0;        
+      v = 0;
     }
     checksum += v;
-    Serial.print(v, BYTE);
+    Serial.write(v);
     addr++;bytes--;
   }
+
   return checksum;
 }
 
@@ -254,12 +248,12 @@ int doPlaySeq(){
  * Send status packet
  */
 void statusPacket(int id, int err){
-  Serial.print(0xff,BYTE);
-  Serial.print(0xff,BYTE);
-  Serial.print(id,BYTE);
-  Serial.print(2,BYTE);
-  Serial.print(err,BYTE);
-  Serial.print(255-((id+2+err)%256),BYTE);
+  Serial.write(0xff);
+  Serial.write(0xff);
+  Serial.write(id);
+  Serial.write(2);
+  Serial.write(err);
+  Serial.write(255-((id+2+err)%256));
 }
 
 /* 
@@ -303,7 +297,7 @@ void loop(){
         mode = 0;
         if((checksum%256) != 255){ 
           // return an error packet: FF FF id Len Err=bad checksum, params=None check
-          statusPacket(id,CHECKSUM_ERROR);
+          statusPacket(id, ERR_CHECKSUM);
         }else if(id == 253){  // ID = 253, ArbotiX instruction
           switch(ins){     
             case AX_WRITE_DATA:
@@ -313,14 +307,14 @@ void loop(){
              
             case AX_READ_DATA:
               checksum = id + params[1] + 2;                            
-              Serial.print(0xff,BYTE);
-              Serial.print(0xff,BYTE);
-              Serial.print(id,BYTE);
-              Serial.print(2+params[1],BYTE);
-              Serial.print(0,BYTE);
+              Serial.write(0xff);
+              Serial.write(0xff);
+              Serial.write(id);
+              Serial.write((unsigned char)2+params[1]);
+              Serial.write((unsigned char)0);
               // send actual data
               checksum += handleRead();
-              Serial.print(255-((checksum)%256),BYTE);
+              Serial.write(255-((checksum)%256));
               break;
              
             case ARB_SIZE_POSE:                   // Pose Size = 7, followed by single param: size of pose
@@ -406,52 +400,51 @@ void loop(){
 
             case ARB_CONTROL_STAT:               // Read status of a controller
               if(params[0] < CONTROLLER_COUNT){             
-                Serial.print(0xff,BYTE);
-                Serial.print(0xff,BYTE);
-                Serial.print(id,BYTE);
-                Serial.print(3,BYTE);
-                Serial.print(0,BYTE);
+                Serial.write((unsigned char)0xff);
+                Serial.write((unsigned char)0xff);
+                Serial.write((unsigned char)id);
+                Serial.write((unsigned char)3);
+                Serial.write((unsigned char)0);
                 checksum = controllers[params[0]].interpolating;
-                Serial.print(checksum,BYTE);
+                Serial.write((unsigned char)checksum);
                 checksum += id + 3;
-                Serial.print(255-((checksum)%256),BYTE);
+                Serial.write((unsigned char)255-((checksum)%256));
 #ifdef USE_BASE
               }else if(params[0] == 10){
                 checksum = id + 2 + 8;                            
-                Serial.print(0xff,BYTE);
-                Serial.print(0xff,BYTE);
-                Serial.print(id,BYTE);
-                Serial.print(2+8,BYTE);
-                Serial.print(0,BYTE);   // error level
+                Serial.write((unsigned char)0xff);
+                Serial.write((unsigned char)0xff);
+                Serial.write((unsigned char)id);
+                Serial.write((unsigned char)2+8);
+                Serial.write((unsigned char)0);   // error level
                 int v = ((unsigned long)Encoders.left>>0)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.left>>8)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.left>>16)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.left>>24)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.right>>0)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.right>>8)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.right>>16)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
                 v = ((unsigned long)Encoders.right>>24)%256;
-                Serial.print(v, BYTE);                
+                Serial.write((unsigned char)v);
                 checksum += v;
-                Serial.print(255-((checksum)%256),BYTE);
+                Serial.write((unsigned char)255-((checksum)%256));
 #endif
               }
               break;
-
           }
         }else if(id == 0xFE){
           // sync read or write
@@ -460,26 +453,26 @@ void loop(){
             int bytes = params[1];    // # of bytes to read from each servo
             int k = 2;
             checksum = id + (bytes*(length-4)) + 2;                            
-            Serial.print(0xff,BYTE);
-            Serial.print(0xff,BYTE);
-            Serial.print(id,BYTE);
-            Serial.print(2+(bytes*(length-4)),BYTE);
-            Serial.print(0,BYTE);     // error code
+            Serial.write((unsigned char)0xff);
+            Serial.write((unsigned char)0xff);
+            Serial.write((unsigned char)id);
+            Serial.write((unsigned char)2+(bytes*(length-4)));
+            Serial.write((unsigned char)0);     // error code
             // send actual data
             for(k=2; k<length-2; k++){
               if( ax12GetRegister(params[k], start, bytes) >= 0){
                 for(i=0;i<bytes;i++){
                   checksum += ax_rx_buffer[5+i];
-                  Serial.print(ax_rx_buffer[5+i],BYTE);
+                  Serial.write((unsigned char)ax_rx_buffer[5+i]);
                 }
               }else{
                 for(i=0;i<bytes;i++){
                   checksum += 255;
-                  Serial.print(255,BYTE);
+                  Serial.write((unsigned char)255);
                 }
               }
             }
-            Serial.print(255-((checksum)%256),BYTE);
+            Serial.write((unsigned char)255-((checksum)%256));
           }else{    
             // TODO: sync write pass thru
             int k;
@@ -501,7 +494,7 @@ void loop(){
               // return a packet: FF FF id Len Err params check
               if(ax_rx_buffer[3] > 0){
                 for(i=0;i<ax_rx_buffer[3]+4;i++)
-                  Serial.print(ax_rx_buffer[i],BYTE);
+                  Serial.write(ax_rx_buffer[i]);
               }
               ax_rx_buffer[3] = 0;
               break;

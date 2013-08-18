@@ -1,6 +1,6 @@
 /* 
   Common Definitions for ROS driver ArbotiX Firmware
-  Copyright (c) 2008-2011 Vanadium Labs LLC.  All right reserved.
+  Copyright (c) 2008-2013 Vanadium Labs LLC.  All right reserved.
  
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -67,7 +67,4 @@ unsigned char params[143];      // parameters (match RX-64 buffer size)
 unsigned char index = 0;        // index in param buffer
 
 int checksum;                   // checksum
-
-#define INSTRUCTION_ERROR   0x40
-#define CHECKSUM_ERROR      0x10
 
